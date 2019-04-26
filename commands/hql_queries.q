@@ -95,7 +95,7 @@ DROP TABLE IF EXISTS geolite2_blocks_lookup_temp;
 CREATE TABLE IF NOT EXISTS purchase_events_with_ip_decimal AS SELECT *, convertIpToDecimal(client_ip) AS client_ip_decimal FROM purchase_events;
 
 CREATE TABLE IF NOT EXISTS purchase_events_with_country AS
-SELECT  product_name, product_price, purchase_timestamp, product_category, client_ip, country_name
+SELECT /*+ MAPJOIN(geolite2_blocks_lookup) */ product_name, product_price, purchase_timestamp, product_category, client_ip, country_name
 FROM geolite2_blocks_lookup JOIN purchase_events_with_ip_decimal WHERE client_ip_decimal >= start_ip AND client_ip_decimal <= end_ip;
 
 INSERT OVERWRITE DIRECTORY '/user/cloudera/countries_with_highest_money_spending'
