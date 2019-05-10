@@ -7,7 +7,7 @@ import org.apache.spark.sql.SQLContext
 
 object CountriesWithHighestMoneySpending {
 
-  case class PurchaseEvent(productName: String, productPrice: String, purchaseDate: String, productCategory: String, clientIpAddress: Long)
+  case class PurchaseEvent(productName: String, productPrice: Double, purchaseDate: String, productCategory: String, countryName: String)
   case class GeoLite2Info(startIp: Long, endIp: Long, countryName: String)
 
   def main(args: Array[String]): Unit = {
@@ -18,28 +18,26 @@ object CountriesWithHighestMoneySpending {
 
     val geolite2Blocks = sc.textFile(args(1)).map(x => (x.split(",")(1), x)).filter(x => isAllDigits(x._1))
     val geolite2Locations = sc.textFile(args(2)).map(x => (x.split(",")(0), x)).filter(x => isAllDigits(x._1))
-    val countryInfoDF = geolite2Blocks.join(geolite2Locations).map {
+    val countryInfo = geolite2Blocks.join(geolite2Locations).map {
       x =>
         val subnetInfo = new SubnetUtils(x._2._1.split(",")(0)).getInfo()
         val startIpDecimal = convertIpToDecimal(subnetInfo.getLowAddress())
         val endIpDecimal = convertIpToDecimal(subnetInfo.getHighAddress())
-        (startIpDecimal, endIpDecimal, x._2._2.split(",")(5))
-    }.toDF("startIp", "endIp", "countryName")
-    
+        new GeoLite2Info(startIpDecimal, endIpDecimal, x._2._2.split(",")(5))
+    }.sortBy(x => x.startIp).collect
+
     val resultSet = sc.textFile(args(0)).map {
       line =>
         val col = line.split(",")
-        (col(0), col(1), col(2), col(3), convertIpToDecimal(col(4)))
-    }.toDF("productName", "productPrice", "purchaseDate", "productCategory", "clientIpAddress")
-    .join(countryInfoDF, $"clientIpAddress" >= $"startIp" && $"clientIpAddress" <= $"endIp")
-    .as[(String, String, String, String, Long, Long, Long, String)].rdd
-    .map(p => (p._8, java.lang.Double.parseDouble(p._2))).reduceByKey(_ + _)
-    .filter(x => x._1 != null && x._1.length > 0).sortBy(_._2, false).take(10)
+        val decimalIpAddress = convertIpToDecimal(col(4))
+        val countryName = findCountryBinarySearch(decimalIpAddress, countryInfo)
+        new PurchaseEvent(col(0), java.lang.Double.parseDouble(col(1)), col(2), col(3), countryName)
+    }.map(p => (p.countryName, p.productPrice)).reduceByKey(_ + _).filter(x => x._1 != null && x._1.length > 0).sortBy(_._2, false).take(10)
 
     val jdbcUrl = args(3)
     val jdbcUser = args(4)
     val jdbcPass = args(5)
-    
+
     val conn = DriverManager.getConnection(jdbcUrl, jdbcUser, jdbcPass)
 
     for (element <- resultSet) {
@@ -47,7 +45,21 @@ object CountriesWithHighestMoneySpending {
         "INSERT INTO countries_with_highest_money_spending VALUES (\"" + element._1.replaceAll("[\"|']", "") + "\", " + truncateDouble(element._2) + ")")
     }
     conn.close()
+  }
 
+  def findCountryBinarySearch(targetIp: Long, geolite2Info: Array[GeoLite2Info]): String = {
+    var left = 0
+    var right = geolite2Info.length - 1
+    while (left <= right) {
+      val mid = left + (right - left) / 2
+      if (targetIp >= geolite2Info(mid).startIp && targetIp <= geolite2Info(mid).endIp)
+        return geolite2Info(mid).countryName
+      else if (geolite2Info(mid).startIp > targetIp)
+        right = mid - 1
+      else
+        left = mid + 1
+    }
+    return ""
   }
 
   def convertIpToDecimal(ip: String): Long = {
@@ -59,6 +71,6 @@ object CountriesWithHighestMoneySpending {
   }
 
   def isAllDigits(x: String) = x forall Character.isDigit
-  
+
   def truncateDouble(n: Double) = (math floor n * 100) / 100
 }
